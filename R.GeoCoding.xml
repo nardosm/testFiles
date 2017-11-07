@@ -1,0 +1,240 @@
+<script>
+	<scriptname>R.GeoCoding</scriptname>
+	<scriptdescription>
+		<![CDATA[
+		 Script Version: V1
+		 Description: This script takes geographical data like an Address string or Individual components of address like street,city,state, country, postal code etc and geocodes the data by identifying 
+					  latitude and longitude details that are closes representation of this address. This script uses Oracle Geocoder service to identify the locations. Please note that coverage for geocoder service is limited only to countries from American continents (North & South America). So as of now this script can geocode addresses from only North American and South American countries.
+					  DISCLAIMER: Please note that this script does not guarantee to geocode each and every address given, neither does it guarantee to provide accurate address these are only approximations.
+					  To differentiate between the addresses that could be found and not found, we have added a flag called "address_located" which will be set to "Y" if the address could be geocoded and "N" if the address cannot be geocoded
+		 
+		 Inputs:      This script can take two kinds of inputs: First is an address passed in as a single unformatted string for example "500 Oracle Parkway. Redwood Shores, CA 94065." or address in general format which is 
+					  broken into individual components like House number, street, city, state, Postal code etc.
+					  ID column is a mandatory input for both the kinds of inputs.
+					  Here is a brief on what inputs should be sent to the R-script for each of these addresss kinds.
+						 1) Unformatted : If your address is an unformatted single string, then you should pass in id column(which is the identity column required to identify the address) and address_string which contains the 
+					                      unformatted address.
+					 	 2) GeneralForm : In your dataset if you have the address in formatted structure with broken up components like Street, City, State, Country etc then along with ID column you need to send Street,
+                                          City,State,Country,Postal_code details.
+								  
+		 Optional Inputs:
+      				  1) address_format : Specify the address format of the inputs. Like mentioned above currently we support two address formats : "unformatted" and "gen_form"
+					  2) service_url : Specify the URL for Oracle geocoder service. If you do not specify anything by default the current ongoing version of Oracle Geocoder service.
+					  3) proxy_url : If your network requires you to use some proxy(because of some firewall or VPN), please specify the proxy url with the port number. 
+			
+		 Output:     This R-Script outputs Longitude, Latitude for the address and it also returns an additional column called address_located which tells whether the address could be geocoded or not. If address_located is "Y"
+            		 then the address was successfully geocoded. If address_located is "N" then the address could not be located successfully. 
+		 
+		 Developed Using: R 3.1.1
+		 Package Dependency: "httr", "XML"
+		]]>
+	</scriptdescription>
+	<inputs>
+		<column>
+			<name>id</name>
+			<nillable>NO</nillable>
+			<required>YES</required>
+		</column>
+		<column>
+			<name>address_string</name>
+			<nillable>YES</nillable>
+			<required>NO</required>
+		</column>
+		<column>
+			<name>street</name>
+			<nillable>YES</nillable>
+			<required>NO</required>
+		</column>
+		<column>
+			<name>city</name>
+			<nillable>YES</nillable>
+			<required>NO</required>
+		</column>
+		<column>
+			<name>state</name>
+			<nillable>YES</nillable>
+			<required>NO</required>
+		</column>
+		<column>
+			<name>country</name>
+			<nillable>YES</nillable>
+			<required>NO</required>
+		</column>
+		<column>
+			<name>postal_code</name>
+			<nillable>YES</nillable>
+			<required>NO</required>
+		</column>
+	</inputs>
+	<outputs>
+		<column>
+			<name>id</name>
+		</column>			
+		<column>
+			<name>longitude</name>
+			<datatype>varchar(100)</datatype>
+			<aggr_rule>none</aggr_rule>
+		</column>
+		<column>
+			<name>latitude</name>
+			<datatype>varchar(100)</datatype>
+			<aggr_rule>none</aggr_rule>
+		</column>
+		<column>
+			<name>address_located</name>
+			<datatype>varchar(10)</datatype>
+			<aggr_rule>none</aggr_rule>
+		</column>		
+		<column>
+			<name>dummy</name>
+			<datatype>double</datatype>
+			<aggr_rule>sum</aggr_rule>
+		</column>		
+	</outputs>	
+	<options>
+		<option>
+			<name>address_format</name>
+			<datatype>varchar(20)</datatype>
+			<value>unformatted</value>
+		</option>				
+		<option>
+			<name>service_url</name>
+			<datatype>varchar(500)</datatype>
+			<value>http://elocation.oracle.com/geocoder/gcserver</value>
+		</option>
+		<option>
+			<name>proxy_url</name>
+			<datatype>varchar(500)</datatype>
+			<value>NONE</value>
+		</option>
+	</options>
+	<scriptcontent>
+		<![CDATA[
+function(dat,address_format,service_url,proxy_url)
+{
+    library(XML)
+	library(httr)
+	
+	batch_size <- 328
+	
+	if (nrow(dat) > batch_size)
+	  iterations <- ceiling(nrow(dat)/batch_size)
+ 	else
+      iterations <- 1
+ 
+	rows_remaining <- nrow(dat)
+	
+	address_list <- data.frame()
+	geocode_debug_fr <- data.frame()
+	beg_position <- 1
+	end_position <- 1
+	
+	for (j in 1:iterations)
+    {	
+		#################################### generate the XML from inputs #########################
+		top_node = newXMLNode("geocode_request", attrs = c(vendor="elocation"))
+		address_list_xml_node <- newXMLNode("address_list", parent=top_node)
+        
+		if (rows_remaining > batch_size)
+		{
+		  end_position <- beg_position+(batch_size-1)
+		  rows_remaining <- rows_remaining - batch_size
+		} 
+		else
+		{
+		  end_position <- nrow(dat)
+		  rows_remaining <- 0
+		} 
+		if (address_format == 'gen_form')
+		{
+			for (i in beg_position:end_position)
+			{
+			  input_location <- newXMLNode("input_location", attrs = c(id = dat$id[i]), parent = address_list_xml_node)
+			  address_details_xml_node <- newXMLNode("input_address", attrs = c(match_mode="DEFAULT"), parent = input_location)
+			  newXMLNode("gen_form", attrs = c(street=as.character(dat$street[i]), city=as.character(dat$city[i]), state=as.character(dat$state[i]), Country=as.character(dat$country[i]), postal_code = dat$postal_code[i]), parent = address_details_xml_node)
+			}
+        }
+		
+		if (address_format == 'unformatted')
+		{
+			for (i in beg_position:end_position)
+			{
+			  input_location <- newXMLNode("input_location", attrs = c(id = dat$id[i]), parent = address_list_xml_node)
+			  address_details_xml_node <- newXMLNode("input_address", attrs = c(match_mode="DEFAULT"), parent = input_location)
+			  unformatted_xml_node <- newXMLNode("unformatted", attrs = c(country = as.character(dat$country[i])), parent = address_details_xml_node)
+			  newXMLNode("address_line", attrs = c(value = as.character(dat$address_string[i])), parent = unformatted_xml_node)
+            }		    
+		}
+     	xmltxt <- paste(capture.output(top_node, file=NULL), collapse="\n")
+		
+		######################## Invoke the service and return results ###########################
+
+		if (proxy_url != 'NONE')
+		  Sys.setenv(http_proxy=proxy_url)
+		
+		params <- list(xml_request = xmltxt)
+		
+		res <- POST(service_url, body = params, encode = "form", verbose())
+		result <- rawToChar(res$content)
+		result_xml <- xmlParse(result)
+		
+		xml_res_geoid <- as.data.frame(t(xmlSApply(result_xml["/geocode_response/geocode"],xmlAttrs)),stringsAsFactors=FALSE)
+		xml_res_Address <- as.data.frame(t(xmlSApply(result_xml["/geocode_response/geocode/match/output_address "],xmlAttrs)),stringsAsFactors=FALSE)
+		xml_res_latlong <- as.data.frame(t(xmlSApply(result_xml["/geocode_response/geocode/match "],xmlAttrs)),stringsAsFactors=FALSE)
+
+		## Multiple Lat and Long can be returned for an address. For now we are choosing only the first address
+		## But this needs to be addressed in future versions of this script
+
+		xml_res_Address <- cbind(xml_res_Address,xml_res_latlong) 
+		xml_res_Address <- subset(xml_res_Address, xml_res_Address$sequence == 0)
+		xml_res_Address$address_located <- "Y"
+		
+		## seperate out the geoids for which we have not found any matches. We need to mark them as Address not found
+		
+		xml_res_geoid_nomatch <- subset(xml_res_geoid, xml_res_geoid$match_count == 0)
+		
+		xml_res_geoid <- subset(xml_res_geoid, xml_res_geoid$match_count > 0)
+		
+		
+		## GeoIDs for which we have not found addresses, we need to set the Address_found flag to N
+		## Create an empty xml_res_Address dataframe
+		xml_res_Address_nomatch <- xml_res_Address[FALSE,]
+		
+		## populate xml_res_Address_nomatch with empty rows. # of rows to be populated is # of geoids for which match is not found
+		rows_to_pop <- nrow(xml_res_geoid_nomatch)
+		
+		## populate it
+		
+		if (rows_to_pop > 0)
+		{
+		   xml_res_Address_nomatch[1:rows_to_pop,] <- " "
+		   xml_res_Address_nomatch$address_located <- "N"
+		}   
+	
+		
+		output_nomatch <- cbind(xml_res_geoid_nomatch$id,xml_res_Address_nomatch)
+		colnames(output_nomatch)[1] <- "id" 
+		
+		output <- cbind(xml_res_geoid$id,xml_res_Address)
+		colnames(output)[1] <- "id"
+		
+		output <- rbind(output,output_nomatch)
+		
+		if (j == 1)
+		{
+		   address_list <- output[,c(1,3,4,6,10,11,17,18,23)]
+		   geocode_debug_fr <- output
+		}   
+		else 
+        {
+           address_list <- rbind(address_list,output[,c(1,3,4,6,10,11,17,18,23)])		
+		   geocode_debug_fr <- rbind(geocode_debug_fr,output)
+		}  
+        beg_position <- end_position+1
+	}
+	address_list$dummy <- 1
+	return (address_list[,c(1,7,8,9,10)])
+}
+]]>
+	</scriptcontent>
+</script>
